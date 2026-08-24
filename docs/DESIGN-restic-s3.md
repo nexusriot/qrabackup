@@ -298,9 +298,15 @@ functions. Stdlib-`unittest` suite under `tests/` (80 tests, no display/network)
 covers formats, model, settings, parsers and commands. Run:
 `python3 -m unittest discover -s tests`.
 
-**Phase 3 — polish (next).**
-Credential test, lock detection/`unlock`, password export, AWS-profile/file
-credential sources, screenshots. (`Check` already shipped in Phase 1.)
+**Phase 3 — polish. ✅ MOSTLY DONE (2026-08-24)**
+Shipped: credential test (**Test** = `cat config`, with plain-language failure
+diagnosis for wrong password / bad S3 keys / missing repo / stale lock /
+unreachable endpoint), **Unlock** (stale-lock removal), credentials **Export…**
+(plaintext 0600 escrow file). Also shipped alongside: async metadata reads
+(snapshots/stats/dry-run via `CaptureRunner`, cancellable, UI never blocks) and
+per-profile last-run status (`LastRun` persisted in settings, ✓/✗ + time +
+duration in the profile list). Still open: AWS-profile/file credential sources,
+screenshots. (`Check` already shipped in Phase 1.)
 
 (Optional Phase 4 — rclone backend for non-S3 targets, reusing the same engine.)
 

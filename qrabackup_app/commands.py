@@ -25,7 +25,10 @@ ArgsEnv = Tuple[List[str], Env]
 class RunStep:
     """One subprocess in a run. Steps sharing a ``group`` belong to the same
     profile; if a step with ``abort_group_on_fail`` fails, the remaining steps
-    in that group are skipped (but other groups still run)."""
+    in that group are skipped (but other groups still run). A step with
+    ``records_status`` set is the profile's actual backup step: its outcome is
+    recorded as the profile's last-run status (manual actions and follow-up
+    forget/prune steps are not)."""
     group: int
     label: str
     program: str
@@ -33,6 +36,8 @@ class RunStep:
     env: Optional[Env]
     parser: Any
     abort_group_on_fail: bool = False
+    job_id: str = ""
+    records_status: bool = False
 
 
 def rsync_args(job: Job) -> List[str]:
@@ -123,6 +128,38 @@ def restic_forget_args(job: Job, *, prune: bool, dry_run: bool = False) -> ArgsE
     return args, env
 
 
+def export_credentials_text(job: Job) -> str:
+    """Plaintext export of a restic profile's repository + credentials, for
+    offline safekeeping (the design stores them plaintext by choice — this just
+    makes the escrow copy intentional). Raises ValueError when there is nothing
+    meaningful to export."""
+    r = job.restic
+    repo = r.build_repository()
+    if not repo and not r.password:
+        raise ValueError("nothing to export — set a repository and password first")
+    lines = [
+        f"# qrabackup restic credentials — profile: {job.name}",
+        "# KEEP THIS FILE PRIVATE. Without the repository password the backup",
+        "# CANNOT be decrypted — restic has no password recovery.",
+        "",
+        f"repository={repo}",
+        f"RESTIC_PASSWORD={r.password}",
+    ]
+    if r.access_key_id:
+        lines.append(f"AWS_ACCESS_KEY_ID={r.access_key_id}")
+    if r.secret_access_key:
+        lines.append(f"AWS_SECRET_ACCESS_KEY={r.secret_access_key}")
+    if r.region.strip():
+        lines.append(f"AWS_DEFAULT_REGION={r.region.strip()}")
+    lines += [
+        "",
+        "# Restore without qrabackup: export the variables above, then",
+        f"#   restic -r {shlex.quote(repo)} snapshots",
+        f"#   restic -r {shlex.quote(repo)} restore latest --target /some/dir",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def masked_env_str(env: Env) -> str:
     """Render an env dict for display with secrets masked."""
     parts = []
@@ -156,16 +193,18 @@ def build_run_steps(job: Job, group: int) -> List[RunStep]:
     if job.engine == "restic":
         bargs, env = restic_backup_args(job)
         steps = [RunStep(group, f"{job.name}: restic backup", "restic", bargs,
-                         env, ResticJsonProgressParser(), abort_group_on_fail=True)]
+                         env, ResticJsonProgressParser(), abort_group_on_fail=True,
+                         job_id=job.id, records_status=True)]
         if job.restic.retention.enabled:
             # Raises if retention is enabled but unset — surfaced to the caller
             # so the profile is skipped/reported rather than nuking snapshots.
             fargs, _ = restic_forget_args(job, prune=True)
             steps.append(RunStep(group, f"{job.name}: forget + prune", "restic",
-                                 fargs, env, PlainProgressParser()))
+                                 fargs, env, PlainProgressParser(), job_id=job.id))
         return steps
     args = rsync_args(job)
-    return [RunStep(group, f"{job.name}: rsync", "rsync", args, None, RsyncProgressParser())]
+    return [RunStep(group, f"{job.name}: rsync", "rsync", args, None,
+                    RsyncProgressParser(), job_id=job.id, records_status=True)]
 
 
 def steps_to_skip_on_failure(failed_step: Optional[RunStep],

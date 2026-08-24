@@ -1,0 +1,29 @@
+qrabackup (0.5.0) unstable; urgency=medium
+
+  * restic Test connection button with plain-language failure diagnosis
+    (wrong password, bad S3 keys, missing repo, stale lock, unreachable
+    endpoint) — hints also shown on every restic error.
+  * restic Unlock button (remove stale repository locks).
+  * Export… button: save repository URL, password and S3 keys to a
+    plaintext 0600 file as an offline recovery escrow.
+  * Snapshots/Stats/Forget dry-run no longer block the UI; Stop cancels.
+  * Per-profile last-run status (ok/fail, time, duration) in the profile
+    list, persisted across restarts.
+  * Fix: deleting a profile no longer overwrites the next profile with
+    the deleted one's settings.
+  * Fix: a corrupt settings.json is backed up (.corrupt.bak) instead of
+    being silently overwritten on the next save.
+  * Fix: settings tmp file is created with 0600 permissions from the
+    first byte (secrets were briefly world-readable during saves).
+  * Fix: startup no longer crashes on a corrupted window-geometry blob.
+
+ -- Vlad Ananyev <vlananyev@gmail.com>  Mon, 24 Aug 2026 00:00:00 +0000
+
+qrabackup (0.4.0) unstable; urgency=medium
+
+  * restic/S3 engine: encrypted, deduplicated backups to S3-compatible
+    stores, with init/snapshots/restore/check/forget+prune/stats.
+  * Unified run-step queue; retention (forget --prune) after backup.
+  * Refactor into qrabackup_app package; unit test suite.
+
+ -- Vlad Ananyev <vlananyev@gmail.com>  Sun, 21 Jun 2026 00:00:00 +0000

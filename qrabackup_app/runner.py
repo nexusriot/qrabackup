@@ -13,6 +13,69 @@ from PyQt5 import QtCore
 from .parsers import Emit, PlainProgressParser
 
 
+class CaptureRunner(QtCore.QObject):
+    """Runs one subprocess to completion and captures its full stdout/stderr,
+    without blocking the GUI thread (unlike subprocess.run). Channels stay
+    separate so JSON on stdout remains parseable. ``done(rc, stdout, stderr)``
+    fires exactly once per start(): rc 127 = program missing, 124 = timed out,
+    130 = killed/cancelled."""
+
+    done = QtCore.pyqtSignal(int, str, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.proc = QtCore.QProcess(self)
+        self.proc.finished.connect(self._on_finished)
+        self._timer = QtCore.QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._on_timeout)
+        self._timeout_s = 0
+        self._timed_out = False
+
+    def running(self) -> bool:
+        return self.proc.state() != QtCore.QProcess.NotRunning
+
+    def start(self, program: str, args: List[str],
+              env: Optional[Dict[str, str]] = None, timeout_ms: int = 120000):
+        if self.running():
+            return
+        self._timed_out = False
+        self._timeout_s = max(1, timeout_ms // 1000)
+
+        penv = QtCore.QProcessEnvironment.systemEnvironment()
+        for k, v in (env or {}).items():
+            penv.insert(k, str(v))
+        self.proc.setProcessEnvironment(penv)
+
+        program_path = QtCore.QStandardPaths.findExecutable(program)
+        if not program_path:
+            # Deliver asynchronously so the caller finishes wiring up first.
+            QtCore.QTimer.singleShot(
+                0, lambda: self.done.emit(127, "", f"{program} not found in PATH"))
+            return
+        self._timer.start(timeout_ms)
+        self.proc.start(program_path, args)
+
+    def cancel(self):
+        if self.running():
+            self.proc.kill()
+
+    def _on_timeout(self):
+        self._timed_out = True
+        self.cancel()
+
+    def _on_finished(self, code: int, status: QtCore.QProcess.ExitStatus):
+        self._timer.stop()
+        out = bytes(self.proc.readAllStandardOutput()).decode(errors="replace")
+        err = bytes(self.proc.readAllStandardError()).decode(errors="replace")
+        if self._timed_out:
+            self.done.emit(124, out, f"timed out after {self._timeout_s}s")
+        elif status == QtCore.QProcess.CrashExit:
+            self.done.emit(130, out, err.strip() or "process was killed")
+        else:
+            self.done.emit(code, out, err)
+
+
 class CommandRunner(QtCore.QObject):
     started = QtCore.pyqtSignal()
     line = QtCore.pyqtSignal(str)

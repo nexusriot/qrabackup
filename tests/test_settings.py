@@ -35,6 +35,15 @@ class DataParsingTest(unittest.TestCase):
         self.assertIsNone(settings.window_size_from_data({"window": {"size": [1]}}))
         self.assertIsNone(settings.window_size_from_data({"window": {"size": "bad"}}))
 
+    def test_parse_settings_text(self):
+        self.assertEqual(settings.parse_settings_text('{"version": 2}'), {"version": 2})
+        with self.assertRaises(ValueError):
+            settings.parse_settings_text("{not json")
+        with self.assertRaises(ValueError):
+            settings.parse_settings_text("[1, 2]")  # valid JSON, wrong root
+        with self.assertRaises(ValueError):
+            settings.parse_settings_text('"just a string"')
+
     def test_window_geometry(self):
         self.assertEqual(
             settings.window_geometry_from_data({"window": {"geometry": "AQID"}}), "AQID")
@@ -85,6 +94,24 @@ class WriteSettingsTest(unittest.TestCase):
         settings.write_settings(self.path, {"version": 2, "jobs": []})
         mode = stat.S_IMODE(os.stat(self.path).st_mode)
         self.assertEqual(mode, 0o600)
+
+    def test_rewrite_tightens_loose_perms(self):
+        self.path.write_text("{}")
+        os.chmod(self.path, 0o644)
+        settings.write_settings(self.path, {"version": 2, "jobs": []})
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+
+    def test_corrupt_backup_once(self):
+        raw = "{broken"
+        self.path.write_text(raw)
+        bak = settings.write_corrupt_backup(self.path, raw)
+        self.assertIsNotNone(bak)
+        self.assertEqual(bak.name, "settings.json.corrupt.bak")
+        self.assertEqual(bak.read_text(), raw)
+        self.assertEqual(stat.S_IMODE(os.stat(bak).st_mode), 0o600)
+        # second call is a no-op (does not overwrite)
+        self.assertIsNone(settings.write_corrupt_backup(self.path, "other"))
+        self.assertEqual(bak.read_text(), raw)
 
     def test_legacy_backup_once(self):
         self.path.write_text('{"jobs": []}')  # legacy file

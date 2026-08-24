@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Qrabackup
+GenericName=Backup Tool
+Comment=Back up folders with rsync or encrypted restic/S3 repositories
+Exec=qrabackup
+Icon=drive-harddisk
+Terminal=false
+Categories=Utility;Archiving;System;
+Keywords=backup;rsync;restic;S3;MinIO;snapshot;restore;mirror;
+StartupNotify=true

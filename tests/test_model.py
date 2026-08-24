@@ -3,6 +3,7 @@ import unittest
 
 from qrabackup_app.model import (
     Job,
+    LastRun,
     ResticConfig,
     ResticRetention,
     RsyncOptions,
@@ -130,6 +131,33 @@ class JobTest(unittest.TestCase):
         self.assertTrue(j.id)
         # two new jobs get distinct ids
         self.assertNotEqual(j.id, new_job("Other").id)
+
+
+class LastRunTest(unittest.TestCase):
+    def test_roundtrip_via_job(self):
+        j = new_job("A")
+        j.last_run = LastRun(when="2026-08-24T12:00:00", exit_code=0, duration_s=3.2)
+        d = j.to_dict()
+        self.assertEqual(d["last_run"],
+                         {"when": "2026-08-24T12:00:00", "exit_code": 0, "duration_s": 3.2})
+        j2 = Job.from_dict(d)
+        self.assertEqual(j2.last_run.when, "2026-08-24T12:00:00")
+        self.assertEqual(j2.last_run.exit_code, 0)
+        self.assertEqual(j2.last_run.duration_s, 3.2)
+
+    def test_absent_by_default(self):
+        j = Job.from_dict({"name": "A"})
+        self.assertIsNone(j.last_run)
+        self.assertNotIn("last_run", j.to_dict())
+
+    def test_non_dict_ignored(self):
+        self.assertIsNone(Job.from_dict({"name": "A", "last_run": "junk"}).last_run)
+
+    def test_bad_values_fall_back(self):
+        lr = LastRun.from_dict({"when": 5, "exit_code": "x", "duration_s": None})
+        self.assertEqual(lr.when, "5")
+        self.assertEqual(lr.exit_code, 0)
+        self.assertEqual(lr.duration_s, 0.0)
 
 
 if __name__ == "__main__":

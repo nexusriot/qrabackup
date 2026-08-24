@@ -8,19 +8,20 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
+import time
 import uuid
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-from . import commands, settings
+from . import __version__, commands, settings
 from .commands import RunStep
-from .formats import human_bytes
-from .model import Job, ResticConfig, ResticRetention, new_job
-from .parsers import PlainProgressParser
-from .runner import CommandRunner
+from .formats import format_last_run, human_bytes
+from .model import Job, LastRun, ResticConfig, ResticRetention, new_job
+from .parsers import PlainProgressParser, diagnose_restic_failure
+from .runner import CaptureRunner, CommandRunner
 
 
 class SnapshotsDialog(QtWidgets.QDialog):
@@ -90,7 +91,7 @@ class SnapshotsDialog(QtWidgets.QDialog):
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Qrabackup Backup 0.4")
+        self.setWindowTitle(f"Qrabackup Backup {__version__}")
         self.resize(1080, 760)
 
         self.runner = CommandRunner(self)
@@ -102,6 +103,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.runner.finished.connect(self.on_step_finished)
         self.runner.state_changed.connect(self.on_state)
 
+        # Non-blocking capture for restic metadata reads (snapshots, stats,
+        # forget --dry-run, cat config). One at a time; Stop cancels it.
+        self.capture = CaptureRunner(self)
+        self.capture.done.connect(self._on_capture_done)
+        self._capture_cb: Optional[Callable[[int, str, str], None]] = None
+        self._capture_cancelled = False
+
         # App state
         self.jobs: List[Job] = []
         self.current_job_index: int = -1
@@ -110,6 +118,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # forget+prune step after its backup.
         self._steps: List[RunStep] = []
         self._current_step: Optional[RunStep] = None
+        self._step_started_at: float = 0.0  # time.monotonic() at step start
 
         # True while a profile is being loaded into the form, so the form-change
         # handlers don't write the half-populated form back into the model.
@@ -259,11 +268,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_job_del.clicked.connect(self.delete_job)
 
         # restic action buttons
+        self.btn_res_test.clicked.connect(self.restic_test_connection)
         self.btn_res_init.clicked.connect(self.restic_init)
         self.btn_res_snap.clicked.connect(self.restic_snapshots)
         self.btn_res_check.clicked.connect(self.restic_check)
+        self.btn_res_unlock.clicked.connect(self.restic_unlock)
         self.btn_res_prune.clicked.connect(self.restic_forget_prune)
         self.btn_res_stats.clicked.connect(self.restic_stats)
+        self.btn_res_export.clicked.connect(self.export_credentials)
 
     def _build_rsync_page(self) -> QtWidgets.QWidget:
         page = QtWidgets.QWidget()
@@ -349,13 +361,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.res_secret.setPlaceholderText("AWS_SECRET_ACCESS_KEY")
         self.chk_show_secrets = QtWidgets.QCheckBox("Show")
         self.chk_show_secrets.toggled.connect(self._toggle_secret_echo)
+        self.btn_res_export = QtWidgets.QPushButton("Export…")
+        self.btn_res_export.setToolTip(
+            "Save this profile's repository URL, password and S3 keys to a "
+            "plaintext file for offline safekeeping.")
         cg.addWidget(QtWidgets.QLabel("Repo password:"), 0, 0)
         cg.addWidget(self.res_password, 0, 1)
         cg.addWidget(self.chk_show_secrets, 0, 2)
+        cg.addWidget(self.btn_res_export, 0, 3)
         cg.addWidget(QtWidgets.QLabel("S3 access key:"), 1, 0)
-        cg.addWidget(self.res_akid, 1, 1, 1, 2)
+        cg.addWidget(self.res_akid, 1, 1, 1, 3)
         cg.addWidget(QtWidgets.QLabel("S3 secret key:"), 2, 0)
-        cg.addWidget(self.res_secret, 2, 1, 1, 2)
+        cg.addWidget(self.res_secret, 2, 1, 1, 3)
 
         # Retention: when enabled, a forget --prune step runs after each
         # successful backup; the "Forget + Prune…" button applies it on demand.
@@ -387,13 +404,22 @@ class MainWindow(QtWidgets.QMainWindow):
         tag_row.addWidget(self.res_tags, 1)
 
         act_row = QtWidgets.QHBoxLayout()
+        self.btn_res_test = QtWidgets.QPushButton("Test")
+        self.btn_res_test.setToolTip(
+            "Verify the repository is reachable and the password/credentials "
+            "work (runs 'restic cat config').")
         self.btn_res_init = QtWidgets.QPushButton("Init repo")
         self.btn_res_snap = QtWidgets.QPushButton("Snapshots…")
         self.btn_res_check = QtWidgets.QPushButton("Check")
+        self.btn_res_unlock = QtWidgets.QPushButton("Unlock")
+        self.btn_res_unlock.setToolTip(
+            "Remove stale repository locks left by interrupted runs (runs "
+            "'restic unlock'; safe if no other restic process is running).")
         self.btn_res_prune = QtWidgets.QPushButton("Forget + Prune…")
         self.btn_res_stats = QtWidgets.QPushButton("Stats")
-        for b in (self.btn_res_init, self.btn_res_snap, self.btn_res_check,
-                  self.btn_res_prune, self.btn_res_stats):
+        for b in (self.btn_res_test, self.btn_res_init, self.btn_res_snap,
+                  self.btn_res_check, self.btn_res_unlock, self.btn_res_prune,
+                  self.btn_res_stats):
             act_row.addWidget(b)
         act_row.addStretch(1)
 
@@ -444,11 +470,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self.jobs.append(new_job("Default"))
         self._refresh_jobs_list()
 
+    @staticmethod
+    def _job_list_label(j: Job) -> str:
+        tag = "restic" if j.engine == "restic" else "rsync"
+        status = format_last_run(j.last_run)
+        return f"{j.name}  [{tag}]" + (f"  {status}" if status else "")
+
     def _refresh_jobs_list(self):
         self.jobs_list.clear()
         for j in self.jobs:
-            tag = "restic" if j.engine == "restic" else "rsync"
-            self.jobs_list.addItem(f"{j.name}  [{tag}]")
+            self.jobs_list.addItem(self._job_list_label(j))
+
+    def _update_job_list_item(self, idx: int):
+        """Update one row's text in place — unlike _refresh_jobs_list this does
+        not clear the list, so it is safe mid-run (no selection churn, no
+        form collect/reload cycle)."""
+        item = self.jobs_list.item(idx)
+        if item is not None and 0 <= idx < len(self.jobs):
+            item.setText(self._job_list_label(self.jobs[idx]))
 
     def _on_job_selected(self, row: int):
         if row < 0 or row >= len(self.jobs):
@@ -479,6 +518,7 @@ class MainWindow(QtWidgets.QMainWindow):
         clone = Job.from_dict(src.to_dict())
         clone.id = uuid.uuid4().hex
         clone.name = src.name + " (copy)"
+        clone.last_run = None  # the copy has never run
         self.jobs.insert(idx + 1, clone)
         self._refresh_jobs_list()
         self._select_job(idx + 1)
@@ -505,6 +545,10 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if QtWidgets.QMessageBox.question(self, "Remove profile", f"Delete '{self.jobs[idx].name}'?") == QtWidgets.QMessageBox.Yes:
             del self.jobs[idx]
+            # Drop the selection before re-selecting: the form still shows the
+            # deleted profile, and _on_job_selected would otherwise collect it
+            # into whichever job now occupies current_job_index.
+            self.current_job_index = -1
             self._refresh_jobs_list()
             self._select_job(min(idx, len(self.jobs) - 1))
             self.save_settings()
@@ -713,6 +757,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         step = self._steps.pop(0)
         self._current_step = step
+        self._step_started_at = time.monotonic()
         self.log.appendPlainText(f"--- {step.label} ---")
         self.progress.setValue(0)
         self.runner.start(step.program, step.args, step.env, step.parser)
@@ -720,12 +765,30 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_step_finished(self, code: int):
         step = self._current_step
         self.log.appendPlainText(f"--- exit {code} ---")
+        if step is not None and step.records_status and step.job_id:
+            self._record_last_run(step.job_id, code)
         skipped = commands.steps_to_skip_on_failure(step, self._steps, code)
         if skipped:
             self.log.appendPlainText(
                 f"[SKIP] {len(skipped)} follow-up step(s) for this profile (previous step failed).")
             self._steps = [s for s in self._steps if s.group != step.group]
         self._run_next_step()
+
+    def _record_last_run(self, job_id: str, code: int):
+        """Persist the backup step's outcome as the profile's last-run status
+        and refresh its list row (in place — a full refresh mid-run would churn
+        the selection and stomp the form)."""
+        for idx, job in enumerate(self.jobs):
+            if job.id == job_id:
+                dur = max(0.0, time.monotonic() - self._step_started_at)
+                job.last_run = LastRun(
+                    when=datetime.now().isoformat(timespec="seconds"),
+                    exit_code=code,
+                    duration_s=round(dur, 1),
+                )
+                self._update_job_list_item(idx)
+                self._save_timer.start()
+                return
 
     def _reconnect_finished(self, slot):
         try:
@@ -736,6 +799,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def stop_backup(self):
         self._steps.clear()
+        if self.capture.running():
+            self._capture_cancelled = True
+            self.capture.cancel()
         self.runner.stop()
 
     def _current_restic_job(self) -> Optional[Job]:
@@ -749,28 +815,38 @@ class MainWindow(QtWidgets.QMainWindow):
             return None
         return job
 
-    def _restic_capture(self, args: List[str], env: Dict[str, str], timeout: int = 120):
-        """Run a restic command and capture its output (blocking, with a wait
-        cursor). For quick metadata reads (snapshots, stats, forget --dry-run).
-        Returns (returncode, stdout, stderr)."""
-        full_env = dict(os.environ)
-        full_env.update(env or {})
-        prog = QtCore.QStandardPaths.findExecutable("restic") or "restic"
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-        try:
-            proc = subprocess.run([prog] + args, env=full_env, capture_output=True,
-                                  text=True, timeout=timeout)
-            return proc.returncode, proc.stdout, proc.stderr
-        except subprocess.TimeoutExpired:
-            return 124, "", f"timed out after {timeout}s"
-        except FileNotFoundError:
-            return 127, "", "restic not found in PATH"
-        finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
+    def _restic_capture_async(self, label: str, args: List[str],
+                              env: Dict[str, str],
+                              on_done: Callable[[int, str, str], None],
+                              timeout_ms: int = 120000):
+        """Run a restic metadata command (snapshots, stats, forget --dry-run,
+        cat config) without blocking the UI, then hand (rc, stdout, stderr) to
+        ``on_done``. Buttons are disabled while it runs; Stop cancels it."""
+        if self.capture.running() or self.runner.proc.state() != QtCore.QProcess.NotRunning:
+            return
+        self._capture_cb = on_done
+        self._capture_cancelled = False
+        self._update_buttons(running=True)
+        self.statusBar().showMessage(f"{label}…")
+        self.capture.start("restic", args, env, timeout_ms)
+
+    def _on_capture_done(self, rc: int, out: str, err: str):
+        cb, self._capture_cb = self._capture_cb, None
+        self._update_buttons(running=False)
+        if self._capture_cancelled:
+            self.statusBar().showMessage("Cancelled", 3000)
+            return
+        self.statusBar().clearMessage()
+        if cb:
+            cb(rc, out, err)
 
     def _show_restic_error(self, title: str, rc: int, out: str, err: str):
         msg = (err or out or "").strip() or f"exit code {rc}"
-        QtWidgets.QMessageBox.warning(self, title, f"restic failed (exit {rc}):\n\n{msg[:2000]}")
+        body = f"restic failed (exit {rc}):\n\n{msg[:2000]}"
+        hint = diagnose_restic_failure(f"{err}\n{out}")
+        if hint:
+            body += f"\n\n{hint}"
+        QtWidgets.QMessageBox.warning(self, title, body)
 
     def restic_init(self):
         job = self._current_restic_job()
@@ -809,6 +885,86 @@ class MainWindow(QtWidgets.QMainWindow):
         self._run_steps([RunStep(0, "restic check", "restic",
                                  base + ["check"], env, PlainProgressParser())])
 
+    def restic_test_connection(self):
+        """Cheap end-to-end credential/repo check: 'cat config' touches the
+        backend and needs the repository password, so success proves endpoint,
+        bucket, S3 keys and password all work."""
+        job = self._current_restic_job()
+        if not job:
+            return
+        try:
+            base, env = commands.restic_base_args(job)
+        except ValueError as e:
+            QtWidgets.QMessageBox.warning(self, "Invalid configuration", str(e))
+            return
+        self._restic_capture_async(
+            "Testing connection", base + ["cat", "config"], env,
+            lambda rc, out, err: self._on_test_connection_done(rc, out, err),
+            timeout_ms=60000)
+
+    def _on_test_connection_done(self, rc: int, out: str, err: str):
+        if rc != 0:
+            self._show_restic_error("Test connection", rc, out, err)
+            return
+        repo_id = ""
+        try:
+            repo_id = str(json.loads(out or "{}").get("id", ""))[:8]
+        except (ValueError, json.JSONDecodeError):
+            pass
+        QtWidgets.QMessageBox.information(
+            self, "Test connection",
+            "Repository reachable, credentials and password accepted."
+            + (f"\nRepository ID: {repo_id}" if repo_id else ""))
+
+    def restic_unlock(self):
+        job = self._current_restic_job()
+        if not job:
+            return
+        try:
+            base, env = commands.restic_base_args(job)
+        except ValueError as e:
+            QtWidgets.QMessageBox.warning(self, "Invalid configuration", str(e))
+            return
+        # 'restic unlock' only removes stale locks, so no confirmation needed.
+        self._run_steps([RunStep(0, f"{job.name}: restic unlock (remove stale locks)",
+                                 "restic", base + ["unlock"], env, PlainProgressParser())])
+
+    def export_credentials(self):
+        job = self._current_restic_job()
+        if not job:
+            return
+        try:
+            text = commands.export_credentials_text(job)
+        except ValueError as e:
+            QtWidgets.QMessageBox.warning(self, "Export credentials", str(e))
+            return
+        resp = QtWidgets.QMessageBox.warning(
+            self, "Export credentials",
+            "This saves the repository URL, password and S3 keys to a PLAINTEXT "
+            "file (owner-only permissions). Keep it offline and private — it is "
+            "your recovery escrow if this machine or settings.json is lost.\n\n"
+            "Continue?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if resp != QtWidgets.QMessageBox.Yes:
+            return
+        safe_name = "".join(c if (c.isalnum() or c in "._-") else "_" for c in job.name)
+        suggested = os.path.join(os.path.expanduser("~"),
+                                 f"qrabackup-{safe_name}-credentials.txt")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export restic credentials", suggested, "Text files (*.txt);;All files (*)")
+        if not path:
+            return
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+        except OSError as e:
+            QtWidgets.QMessageBox.warning(self, "Export failed", str(e))
+            return
+        self.statusBar().showMessage(f"Credentials exported → {path}", 5000)
+
     def restic_snapshots(self):
         job = self._current_restic_job()
         if not job:
@@ -818,7 +974,11 @@ class MainWindow(QtWidgets.QMainWindow):
         except ValueError as e:
             QtWidgets.QMessageBox.warning(self, "Invalid configuration", str(e))
             return
-        rc, out, err = self._restic_capture(base + ["snapshots", "--json"], env)
+        self._restic_capture_async(
+            "Listing snapshots", base + ["snapshots", "--json"], env,
+            lambda rc, out, err: self._on_snapshots_listed(job, rc, out, err))
+
+    def _on_snapshots_listed(self, job: Job, rc: int, out: str, err: str):
         if rc != 0:
             self._show_restic_error("List snapshots", rc, out, err)
             return
@@ -887,7 +1047,12 @@ class MainWindow(QtWidgets.QMainWindow):
         except ValueError as e:
             QtWidgets.QMessageBox.warning(self, "Retention", str(e))
             return
-        rc, out, err = self._restic_capture(dry_args, env)
+        self._restic_capture_async(
+            "Forget dry-run", dry_args, env,
+            lambda rc, out, err: self._on_forget_dry_run(job, env, rc, out, err))
+
+    def _on_forget_dry_run(self, job: Job, env: Dict[str, str],
+                           rc: int, out: str, err: str):
         if rc != 0:
             self._show_restic_error("Forget (dry-run)", rc, out, err)
             return
@@ -916,7 +1081,12 @@ class MainWindow(QtWidgets.QMainWindow):
         except ValueError as e:
             QtWidgets.QMessageBox.warning(self, "Invalid configuration", str(e))
             return
-        rc, out, err = self._restic_capture(base + ["stats", "--json"], env)
+        self._restic_capture_async(
+            "Reading stats", base + ["stats", "--json"], env,
+            lambda rc, out, err: self._on_stats_restore_size(job, base, env, rc, out, err))
+
+    def _on_stats_restore_size(self, job: Job, base: List[str],
+                               env: Dict[str, str], rc: int, out: str, err: str):
         if rc != 0:
             self._show_restic_error("Stats", rc, out, err)
             return
@@ -924,7 +1094,11 @@ class MainWindow(QtWidgets.QMainWindow):
             restore = json.loads(out or "{}")
         except (ValueError, json.JSONDecodeError):
             restore = {}
-        rc2, out2, _ = self._restic_capture(base + ["stats", "--mode", "raw-data", "--json"], env)
+        self._restic_capture_async(
+            "Reading raw stats", base + ["stats", "--mode", "raw-data", "--json"], env,
+            lambda rc2, out2, _err2: self._show_stats(job, restore, rc2, out2))
+
+    def _show_stats(self, job: Job, restore: Dict[str, Any], rc2: int, out2: str):
         raw = {}
         if rc2 == 0:
             try:
@@ -978,11 +1152,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_job_del.setEnabled(not running)
         self.rb_rsync.setEnabled(not running)
         self.rb_restic.setEnabled(not running)
+        self.btn_res_test.setEnabled(not running)
         self.btn_res_init.setEnabled(not running)
         self.btn_res_snap.setEnabled(not running)
         self.btn_res_check.setEnabled(not running)
+        self.btn_res_unlock.setEnabled(not running)
         self.btn_res_prune.setEnabled(not running)
         self.btn_res_stats.setEnabled(not running)
+        self.btn_res_export.setEnabled(not running)
 
     def load_settings(self):
         path = settings.config_file_path()
@@ -990,9 +1167,20 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         try:
             raw = path.read_text()
-            data = json.loads(raw)
-        except Exception as e:
+        except OSError as e:
             QtWidgets.QMessageBox.warning(self, "Settings load error", str(e))
+            return
+        try:
+            data = settings.parse_settings_text(raw)
+        except ValueError as e:
+            # Preserve the broken file before auto-save / save-on-close
+            # rewrites settings.json and destroys whatever is recoverable.
+            bak = settings.write_corrupt_backup(path, raw)
+            note = f"\n\nThe unparseable file was backed up to:\n{bak}" if bak else ""
+            QtWidgets.QMessageBox.warning(
+                self, "Settings load error",
+                f"settings.json could not be parsed and will be replaced on "
+                f"the next save.\n\n{e}{note}")
             return
         # One-time backup of the pre-v2 file before we migrate/rewrite it.
         if settings.is_legacy(data):
@@ -1005,7 +1193,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_jobs_list()
         geometry = settings.window_geometry_from_data(data)
         if geometry:
-            self.restoreGeometry(QtCore.QByteArray.fromBase64(geometry.encode("ascii")))
+            try:
+                self.restoreGeometry(QtCore.QByteArray.fromBase64(geometry.encode("ascii")))
+            except (UnicodeEncodeError, ValueError):
+                pass  # hand-edited/corrupted blob — keep the default geometry
         else:
             size = settings.window_size_from_data(data)  # legacy pre-geometry configs
             if size:
@@ -1043,6 +1234,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
             self._steps.clear()
             self.runner.stop()
+        if self.capture.running():
+            # A metadata read (snapshots/stats/…) is harmless to kill.
+            self._capture_cancelled = True
+            self.capture.cancel()
         self._save_timer.stop()  # cancel any pending debounced save
         try:
             self.save_settings()

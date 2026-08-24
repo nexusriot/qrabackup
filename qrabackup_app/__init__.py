@@ -14,4 +14,4 @@ Importing ``formats``/``model``/``settings``/``parsers``/``commands`` does NOT
 import PyQt5, so the logic can be unit-tested without a display.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

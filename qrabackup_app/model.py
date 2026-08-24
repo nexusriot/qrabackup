@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, asdict, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -113,6 +113,29 @@ class ResticConfig:
 
 
 @dataclass
+class LastRun:
+    """Outcome of the profile's most recent backup step (not manual actions
+    like init/check/restore)."""
+    when: str = ""          # local time, ISO "YYYY-MM-DDTHH:MM:SS"
+    exit_code: int = 0
+    duration_s: float = 0.0
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "LastRun":
+        obj = LastRun()
+        obj.when = str(d.get("when", ""))
+        try:
+            obj.exit_code = int(d.get("exit_code", 0))
+        except (TypeError, ValueError):
+            pass
+        try:
+            obj.duration_s = float(d.get("duration_s", 0.0))
+        except (TypeError, ValueError):
+            pass
+        return obj
+
+
+@dataclass
 class Job:
     name: str
     engine: str            # "rsync" | "restic"
@@ -122,12 +145,14 @@ class Job:
     excludes: List[str]
     rsync: RsyncOptions
     restic: ResticConfig
+    last_run: Optional[LastRun] = None
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "Job":
         # Backward compat: v1 stored rsync flags under "options" and had no
         # "engine"/"id"/"restic" keys.
         rsync_d = d.get("rsync", d.get("options", {}))
+        lr = d.get("last_run")
         return Job(
             name=d.get("name", "Job"),
             engine=d.get("engine", "rsync"),
@@ -137,10 +162,11 @@ class Job:
             excludes=list(d.get("excludes", [])),
             rsync=RsyncOptions.from_dict(rsync_d),
             restic=ResticConfig.from_dict(d.get("restic", {})),
+            last_run=LastRun.from_dict(lr) if isinstance(lr, dict) else None,
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "name": self.name,
             "engine": self.engine,
             "id": self.id,
@@ -150,6 +176,9 @@ class Job:
             "rsync": asdict(self.rsync),
             "restic": self.restic.to_dict(),
         }
+        if self.last_run is not None:
+            d["last_run"] = asdict(self.last_run)
+        return d
 
 
 def new_job(name: str, engine: str = "rsync") -> Job:

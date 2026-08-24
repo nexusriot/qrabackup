@@ -215,5 +215,55 @@ class StepsToSkipTest(unittest.TestCase):
         self.assertEqual(commands.steps_to_skip_on_failure(None, [], code=1), [])
 
 
+class RunStepStatusTaggingTest(unittest.TestCase):
+    def test_rsync_step_records_status(self):
+        job = _rsync_job()
+        steps = commands.build_run_steps(job, group=0)
+        self.assertEqual(len(steps), 1)
+        self.assertTrue(steps[0].records_status)
+        self.assertEqual(steps[0].job_id, job.id)
+
+    def test_restic_backup_records_but_forget_does_not(self):
+        job = _restic_job()
+        job.restic.retention = ResticRetention(enabled=True, keep_daily=7)
+        steps = commands.build_run_steps(job, group=2)
+        self.assertEqual(len(steps), 2)
+        self.assertTrue(steps[0].records_status)
+        self.assertFalse(steps[1].records_status)
+        self.assertEqual([s.job_id for s in steps], [job.id, job.id])
+
+    def test_default_runstep_has_no_status(self):
+        # Inline manual actions (init/check/restore/unlock) never record status.
+        s = commands.RunStep(0, "x", "restic", [], None, PlainProgressParser())
+        self.assertFalse(s.records_status)
+        self.assertEqual(s.job_id, "")
+
+
+class ExportCredentialsTest(unittest.TestCase):
+    def test_contains_everything(self):
+        job = _restic_job(access_key_id="AKIAXYZ", secret_access_key="sekret",
+                          region="eu-central-1")
+        text = commands.export_credentials_text(job)
+        self.assertIn(f"# qrabackup restic credentials — profile: {job.name}", text)
+        self.assertIn("repository=s3:s3.eu-central-1.amazonaws.com/bk", text)
+        self.assertIn("RESTIC_PASSWORD=pw", text)
+        self.assertIn("AWS_ACCESS_KEY_ID=AKIAXYZ", text)
+        self.assertIn("AWS_SECRET_ACCESS_KEY=sekret", text)
+        self.assertIn("AWS_DEFAULT_REGION=eu-central-1", text)
+        self.assertIn("restic -r s3:s3.eu-central-1.amazonaws.com/bk snapshots", text)
+        self.assertTrue(text.endswith("\n"))
+
+    def test_optional_fields_omitted(self):
+        text = commands.export_credentials_text(_restic_job())
+        self.assertNotIn("AWS_ACCESS_KEY_ID", text)
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", text)
+        self.assertNotIn("AWS_DEFAULT_REGION", text)
+
+    def test_empty_profile_refused(self):
+        job = new_job("empty", engine="restic")
+        with self.assertRaises(ValueError):
+            commands.export_credentials_text(job)
+
+
 if __name__ == "__main__":
     unittest.main()

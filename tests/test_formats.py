@@ -2,6 +2,7 @@
 import unittest
 
 from qrabackup_app import formats
+from qrabackup_app.model import LastRun
 
 
 class HumanBytesTest(unittest.TestCase):
@@ -66,6 +67,41 @@ class FormatResticSummaryTest(unittest.TestCase):
     def test_missing_snapshot_id(self):
         s = formats.format_restic_summary({})
         self.assertIn("(unknown)", s)
+
+
+class FmtDurationTest(unittest.TestCase):
+    def test_seconds(self):
+        self.assertEqual(formats.fmt_duration(0), "0s")
+        self.assertEqual(formats.fmt_duration(5.4), "5s")
+        self.assertEqual(formats.fmt_duration(59), "59s")
+
+    def test_minutes(self):
+        self.assertEqual(formats.fmt_duration(75), "1m15s")
+        self.assertEqual(formats.fmt_duration(600), "10m00s")
+
+    def test_hours(self):
+        self.assertEqual(formats.fmt_duration(3661), "1h01m")
+
+    def test_bad_input(self):
+        self.assertEqual(formats.fmt_duration("x"), "?")
+        self.assertEqual(formats.fmt_duration(None), "?")
+        self.assertEqual(formats.fmt_duration(-1), "?")
+
+
+class FormatLastRunTest(unittest.TestCase):
+    def test_never_run(self):
+        self.assertEqual(formats.format_last_run(None), "")
+        self.assertEqual(formats.format_last_run(LastRun()), "")
+
+    def test_success(self):
+        s = formats.format_last_run(
+            LastRun(when="2026-08-24T12:00:33", exit_code=0, duration_s=3.2))
+        self.assertEqual(s, "✓ 2026-08-24 12:00 · 3s")
+
+    def test_failure_shows_exit_code(self):
+        s = formats.format_last_run(
+            LastRun(when="2026-08-24T12:00:33", exit_code=23, duration_s=3.2))
+        self.assertEqual(s, "✗ exit 23 · 2026-08-24 12:00")
 
 
 if __name__ == "__main__":

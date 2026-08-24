@@ -23,6 +23,40 @@ class Emit:
     error: Optional[str] = None    # error line -> log pane
 
 
+# Ordered: the first matching group wins, so the most specific causes
+# (password, lock) come before the broad S3/network buckets.
+_RESTIC_FAILURE_HINTS = [
+    (("wrong password", "no key found"),
+     "The repository password looks wrong."),
+    (("repository is already locked", "unable to create lock"),
+     "The repository is locked — likely a stale lock from an interrupted run. "
+     "'Unlock' removes stale locks (safe if no other restic process is using "
+     "this repository)."),
+    (("is there a repository at the following location", "not a repository",
+      "specified key does not exist", "specified bucket does not exist",
+      "no such bucket"),
+     "No repository found at this location — check bucket/endpoint/prefix, or "
+     "use 'Init repo' to create one."),
+    (("access denied", "accessdenied", "invalidaccesskeyid",
+      "signaturedoesnotmatch", "status code: 403"),
+     "S3 rejected the credentials — check the access key ID and secret key."),
+    (("connection refused", "no such host", "i/o timeout",
+      "network is unreachable", "certificate", "tls handshake"),
+     "Could not reach the S3 endpoint — check the endpoint URL, network, and "
+     "TLS certificate."),
+]
+
+
+def diagnose_restic_failure(text: str) -> str:
+    """A one-line human hint for a failed restic command, derived from its
+    output; '' when nothing recognizable matched."""
+    low = (text or "").lower()
+    for needles, hint in _RESTIC_FAILURE_HINTS:
+        if any(n in low for n in needles):
+            return hint
+    return ""
+
+
 class PlainProgressParser:
     """No percent parsing: newline-terminated text goes to the log, in-place
     (CR) redraws go to the status bar. Used for restic init/snapshots/check."""

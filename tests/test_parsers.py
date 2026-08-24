@@ -7,6 +7,7 @@ from qrabackup_app.parsers import (
     PlainProgressParser,
     ResticJsonProgressParser,
     RsyncProgressParser,
+    diagnose_restic_failure,
 )
 
 
@@ -108,6 +109,45 @@ class ResticJsonParserTest(unittest.TestCase):
         e = self.p.feed(json.dumps({"message_type": "verbose_status"}), True)
         self.assertIsNone(e.percent)
         self.assertIsNone(e.log)
+
+
+class DiagnoseResticFailureTest(unittest.TestCase):
+    def test_wrong_password(self):
+        hint = diagnose_restic_failure("Fatal: wrong password or no key found")
+        self.assertIn("password", hint)
+
+    def test_stale_lock(self):
+        hint = diagnose_restic_failure(
+            "unable to create lock in backend: repository is already locked "
+            "exclusively by PID 4242 on host laptop by user vlad")
+        self.assertIn("Unlock", hint)
+
+    def test_missing_repository(self):
+        hint = diagnose_restic_failure(
+            "Fatal: unable to open config file: Stat: The specified key does "
+            "not exist.\nIs there a repository at the following location?")
+        self.assertIn("Init repo", hint)
+
+    def test_bad_s3_credentials(self):
+        for msg in ("client.PutObject: Access Denied.",
+                    "InvalidAccessKeyId: the key does not exist",
+                    "SignatureDoesNotMatch"):
+            hint = diagnose_restic_failure(msg)
+            self.assertIn("credentials", hint, msg)
+
+    def test_network(self):
+        hint = diagnose_restic_failure("dial tcp 10.0.0.5:9000: connection refused")
+        self.assertIn("endpoint", hint)
+
+    def test_password_wins_over_broader_matches(self):
+        # A message mentioning both password and a 403 should blame the password.
+        hint = diagnose_restic_failure("wrong password or no key found (status code: 403)")
+        self.assertIn("password", hint)
+
+    def test_unknown_and_empty(self):
+        self.assertEqual(diagnose_restic_failure("something exploded"), "")
+        self.assertEqual(diagnose_restic_failure(""), "")
+        self.assertEqual(diagnose_restic_failure(None), "")
 
 
 if __name__ == "__main__":

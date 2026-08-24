@@ -31,6 +31,34 @@ def fmt_eta(seconds: Any) -> str:
     return f"{m}:{sec:02d}"
 
 
+def fmt_duration(seconds: Any) -> str:
+    """Compact human duration: '5s', '1m15s', '1h03m'."""
+    try:
+        s = float(seconds)
+    except (TypeError, ValueError):
+        return "?"
+    if s < 0:
+        return "?"
+    if s < 60:
+        return f"{s:.0f}s"
+    m, sec = divmod(int(round(s)), 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h}h{m:02d}m"
+    return f"{m}m{sec:02d}s"
+
+
+def format_last_run(lr: Any) -> str:
+    """Short status suffix for the profile list ('' when never run). Duck-typed
+    against model.LastRun so this module stays dependency-free."""
+    if not lr or not getattr(lr, "when", ""):
+        return ""
+    when = str(lr.when)[:16].replace("T", " ")
+    if getattr(lr, "exit_code", 0) == 0:
+        return f"✓ {when} · {fmt_duration(getattr(lr, 'duration_s', 0.0))}"
+    return f"✗ exit {lr.exit_code} · {when}"
+
+
 def format_restic_status(msg: Dict[str, Any]) -> str:
     """One-line status from a restic backup --json ``status`` message."""
     pct = float(msg.get("percent_done", 0.0)) * 100.0

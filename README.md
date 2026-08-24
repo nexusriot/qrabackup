@@ -23,6 +23,8 @@ Profiles are saved under `~/.config/qrabackup/settings.json` (XDG-aware) and are
   - Per-profile **rsync options** (archive, verbose, compress, delete, dry-run, etc.)
 -  **Run Selected** – run the currently selected profile  
 -  **Run All** – run all profiles sequentially  
+-  **Last-run status per profile** – ✓/✗, time, and duration shown in the
+   profile list and remembered across restarts  
 -  **Auto-save settings** on any change and on exit  
 -  **Command preview** – shows the exact `rsync` command being executed  
 -  **Live log output** and **progress bar** based on rsync output (`--info=progress2`)  
@@ -79,13 +81,22 @@ by `restic backup --json`.
 
 Action buttons (restic profiles):
 
+- **Test** — verify the repository is reachable and the credentials/password
+  work (`restic cat config`); failures come with a plain-language diagnosis
+  (wrong password, bad S3 keys, missing repo, stale lock, unreachable endpoint).
 - **Init repo** — create a new encrypted repository (do this once; confirmed).
 - **Snapshots…** — browse snapshots in a table; from there **Restore selected…**
   (warns if the target folder is non-empty) or **Forget selected**.
 - **Check** — verify repository integrity.
+- **Unlock** — remove stale repository locks left by interrupted runs.
 - **Forget + Prune…** — apply the retention policy and reclaim space. Shows a
   `--dry-run` preview and asks for confirmation before deleting anything.
 - **Stats** — logical size, raw stored size, and dedup/compression saving.
+- **Export…** (next to the password field) — save the repository URL, password
+  and S3 keys to a plaintext `0600` file as an offline recovery escrow.
+
+Snapshots, stats, and dry-run previews run in the background — the window stays
+responsive and **Stop** cancels them.
 
 > **Security note:** credentials and the repo password are stored in plaintext
 > in `~/.config/qrabackup/settings.json` (written `chmod 0600`, and masked in
@@ -137,11 +148,30 @@ python3 -m qrabackup_app
 
 ## Tests
 
-Unit tests cover the pure logic (no Qt / display / network needed):
+Unit tests cover the pure logic plus offscreen UI regression tests (no
+display / network needed):
 
 ```bash
+make test
+# or directly:
 python3 -m unittest discover -s tests
 # or, if you have pytest:
 pytest
 ```
+
+## Building
+
+The Makefile wraps `scripts/build.sh` / `scripts/build-deb.sh` (a project-local
+`.venv` is provisioned automatically; PyInstaller builds for the host arch):
+
+```bash
+make            # standalone binary -> dist/qrabackup
+make deb        # Debian package    -> dist/qrabackup_<version>_<arch>.deb
+make run        # run from source in the local .venv
+make test       # unit test suite (offscreen)
+make clean      # remove build/, dist/ and .venv
+```
+
+`VERSION` defaults to `git describe`, falling back to the package's
+`__version__`; override with `make VERSION=1.2.3 deb`.
 

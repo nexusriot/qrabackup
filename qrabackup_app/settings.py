@@ -30,6 +30,15 @@ def is_legacy(data: Dict[str, Any]) -> bool:
     return data.get("version") != SETTINGS_VERSION
 
 
+def parse_settings_text(raw: str) -> Dict[str, Any]:
+    """Parse settings.json text. Raises ValueError for invalid JSON or a
+    non-object root (callers back the file up before it can be overwritten)."""
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("settings root is not a JSON object")
+    return data
+
+
 def jobs_from_data(data: Dict[str, Any]) -> List[Job]:
     return [Job.from_dict(j) for j in data.get("jobs", [])]
 
@@ -66,30 +75,46 @@ def build_settings_dict(jobs: List[Job],
 
 
 def write_settings(path: Path, data: Dict[str, Any]) -> None:
-    """Atomically write settings (tmp file + replace) with owner-only perms."""
+    """Atomically write settings (tmp file + replace) with owner-only perms.
+    Secrets live here, so the tmp file is created 0600 from the start — never
+    world-readable, not even between creation and a later chmod."""
     path = Path(path)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.chmod(tmp, 0o600)
+        os.fchmod(fd, 0o600)  # normalize a pre-existing/umask-restricted tmp
     except OSError:
         pass
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(data, indent=2))
     tmp.replace(path)
     try:
-        os.chmod(path, 0o600)  # secrets live here — keep it owner-only
+        os.chmod(path, 0o600)
     except OSError:
         pass
+
+
+def _write_backup_once(path: Path, raw: str, suffix: str) -> Optional[Path]:
+    path = Path(path)
+    bak = path.with_name(path.name + suffix)
+    if bak.exists():
+        return None
+    try:
+        bak.write_text(raw)
+        os.chmod(bak, 0o600)  # backups carry the same secrets
+        return bak
+    except OSError:
+        return None
 
 
 def write_legacy_backup(path: Path, raw: str) -> Optional[Path]:
     """Write a one-time ``.v1.bak`` of the pre-migration file. Returns the
     backup path if created, else None (already present / write failed)."""
-    path = Path(path)
-    bak = path.with_name(path.name + ".v1.bak")
-    if bak.exists():
-        return None
-    try:
-        bak.write_text(raw)
-        return bak
-    except OSError:
-        return None
+    return _write_backup_once(path, raw, ".v1.bak")
+
+
+def write_corrupt_backup(path: Path, raw: str) -> Optional[Path]:
+    """Preserve an unparseable settings file as ``.corrupt.bak`` before the app
+    inevitably rewrites settings.json (auto-save / save-on-close would silently
+    destroy a possibly hand-recoverable file). One-time, like the v1 backup."""
+    return _write_backup_once(path, raw, ".corrupt.bak")
