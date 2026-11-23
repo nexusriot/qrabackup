@@ -1,6 +1,38 @@
-.venv/
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+/.venv/
+/venv/
+.env
+
+# Test / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build output: scripts/build.sh (build/pyi, dist/qrabackup),
+# scripts/build-deb.sh (dist/*.deb), packaging/build.sh (dist/<target>/, SHA256SUMS)
+/build/
+/dist/
+*.spec.bak
+*.log
+
+# Editors / OS / local agent settings
 .vscode/
 .idea/
-__pycache__/
-build/
-dist/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+.claude/settings.local.json
+
+# Never commit app settings, their backups (.v1.bak / .corrupt.bak),
+# or exported restic credentials - they hold secrets
+settings.json
+settings.json.*
+qrabackup-*-credentials.txt

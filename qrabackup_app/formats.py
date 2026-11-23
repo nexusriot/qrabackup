@@ -4,6 +4,15 @@ from __future__ import annotations
 from typing import Any, Dict
 
 
+def num(v: Any, default: float = 0.0) -> float:
+    """float(v), or ``default`` for None / non-numeric (restic JSON fields can
+    be absent or null depending on version)."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def human_bytes(n: Any) -> str:
     try:
         n = float(n)
@@ -61,7 +70,7 @@ def format_last_run(lr: Any) -> str:
 
 def format_restic_status(msg: Dict[str, Any]) -> str:
     """One-line status from a restic backup --json ``status`` message."""
-    pct = float(msg.get("percent_done", 0.0)) * 100.0
+    pct = num(msg.get("percent_done")) * 100.0
     parts = [f"{pct:.0f}%"]
     tb = msg.get("total_bytes", 0)
     if tb:
@@ -83,5 +92,5 @@ def format_restic_summary(msg: Dict[str, Any]) -> str:
         f"{msg.get('files_changed', 0)} changed, {msg.get('files_unmodified', 0)} unmodified; "
         f"added {human_bytes(msg.get('data_added', 0))} "
         f"(processed {human_bytes(msg.get('total_bytes_processed', 0))}) "
-        f"in {float(msg.get('total_duration', 0)):.1f}s"
+        f"in {num(msg.get('total_duration')):.1f}s"
     )

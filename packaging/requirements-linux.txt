@@ -1,0 +1,7 @@
+# Build-time Python deps for the Linux Docker harness (PyQt5 itself comes from
+# the pinned Ubuntu image's python3-pyqt5: PyPI has no aarch64 PyQt5 wheels).
+# Every transitive dependency is pinned so image rebuilds are repeatable.
+pyinstaller==6.11.1
+pyinstaller-hooks-contrib==2026.10
+altgraph==0.17.5
+packaging==26.3

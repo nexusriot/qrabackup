@@ -5,7 +5,6 @@
 import pathlib
 import platform
 import re
-from PyInstaller.utils.hooks import collect_all
 
 # __version__ is the single source of truth; read it rather than restating it
 # (the package cannot be imported here — importing ui pulls in PyQt5).
@@ -14,14 +13,17 @@ APP_VERSION = re.search(
     pathlib.Path("qrabackup_app/__init__.py").read_text(), re.M,
 ).group(1)
 
-datas, binaries, hiddenimports = collect_all("PyQt5")
+IS_WINDOWS = platform.system() == "Windows"
 
+# PyInstaller's bundled PyQt5 hooks pull in exactly the Qt libraries/plugins the
+# app imports (QtCore/QtGui/QtWidgets + platform plugins). collect_all("PyQt5")
+# used to drag in every Qt module (WebEngine, QML, ...) regardless of excludes.
 a = Analysis(
     ["qrabackup.py"],
     pathex=[],
-    binaries=binaries,
-    datas=datas,
-    hiddenimports=hiddenimports,
+    binaries=[],
+    datas=[],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -55,8 +57,8 @@ exe = EXE(
     name="qrabackup",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=True,
-    upx=True,
+    strip=not IS_WINDOWS,  # no GNU strip for PE binaries
+    upx=False,             # UPX-packed Qt DLLs trip antivirus heuristics
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,         # no terminal window; set True to see stderr

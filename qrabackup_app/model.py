@@ -10,6 +10,22 @@ from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional
 
 
+def _as_dict(v: Any) -> Dict[str, Any]:
+    """Hand-edited / corrupted settings may hold null or a wrong type where an
+    object is expected; treat that as empty rather than crashing on .get()."""
+    return v if isinstance(v, dict) else {}
+
+
+def _as_str_list(v: Any) -> List[str]:
+    """A list of strings, or [] — never ``list("abc") == ['a', 'b', 'c']``."""
+    if not isinstance(v, list):
+        return []
+    return [str(x) for x in v if isinstance(x, (str, int, float))]
+
+
+ENGINES = ("rsync", "restic")
+
+
 @dataclass
 class RsyncOptions:
     archive: bool = True
@@ -23,6 +39,7 @@ class RsyncOptions:
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "RsyncOptions":
         obj = RsyncOptions()
+        d = _as_dict(d)
         for k in asdict(obj).keys():
             if k in d:
                 setattr(obj, k, bool(d[k]))
@@ -42,6 +59,7 @@ class ResticRetention:
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "ResticRetention":
         obj = ResticRetention()
+        d = _as_dict(d)
         obj.enabled = bool(d.get("enabled", obj.enabled))
         obj.prune = bool(d.get("prune", obj.prune))
         for k in ("keep_last", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly"):
@@ -68,10 +86,12 @@ class ResticConfig:
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "ResticConfig":
         obj = ResticConfig()
+        d = _as_dict(d)
         for k in ("bucket", "region", "endpoint", "prefix", "repository",
                   "password", "access_key_id", "secret_access_key"):
-            obj.__dict__[k] = str(d.get(k, ""))
-        obj.tags = [str(t) for t in d.get("tags", [])]
+            v = d.get(k)
+            obj.__dict__[k] = "" if v is None else str(v)
+        obj.tags = _as_str_list(d.get("tags"))
         obj.retention = ResticRetention.from_dict(d.get("retention", {}))
         return obj
 
@@ -123,6 +143,7 @@ class LastRun:
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "LastRun":
         obj = LastRun()
+        d = _as_dict(d)
         obj.when = str(d.get("when", ""))
         try:
             obj.exit_code = int(d.get("exit_code", 0))
@@ -151,15 +172,18 @@ class Job:
     def from_dict(d: Dict[str, Any]) -> "Job":
         # Backward compat: v1 stored rsync flags under "options" and had no
         # "engine"/"id"/"restic" keys.
+        d = _as_dict(d)
         rsync_d = d.get("rsync", d.get("options", {}))
         lr = d.get("last_run")
+        engine = str(d.get("engine") or "rsync").strip().lower()
+        dest = d.get("destination")
         return Job(
-            name=d.get("name", "Job"),
-            engine=d.get("engine", "rsync"),
+            name=str(d.get("name") or "Job"),
+            engine=engine if engine in ENGINES else "rsync",
             id=str(d.get("id") or uuid.uuid4().hex),
-            sources=list(d.get("sources", [])),
-            destination=str(d.get("destination", "")),
-            excludes=list(d.get("excludes", [])),
+            sources=_as_str_list(d.get("sources")),
+            destination="" if dest is None else str(dest),
+            excludes=_as_str_list(d.get("excludes")),
             rsync=RsyncOptions.from_dict(rsync_d),
             restic=ResticConfig.from_dict(d.get("restic", {})),
             last_run=LastRun.from_dict(lr) if isinstance(lr, dict) else None,

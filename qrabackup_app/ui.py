@@ -32,6 +32,9 @@ class SnapshotsDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("restic snapshots")
         self.resize(840, 440)
+        # restic lists oldest first; show newest first so the default selection
+        # (row 0, also what a double-click restores) is the latest snapshot.
+        snapshots = sorted(snapshots, key=lambda s: str(s.get("time", "")), reverse=True)
         self.snapshots = snapshots
         self.chosen_action: Optional[str] = None   # "restore" | "forget"
         self.chosen_snapshot: Optional[Dict[str, Any]] = None
@@ -143,7 +146,7 @@ class MainWindow(QtWidgets.QMainWindow):
         file_menu = menu.addMenu("&File")
         act_save = file_menu.addAction("Save Settings")
         act_save.triggered.connect(self.save_settings)
-        act_reload = file_menu.addAction("Reload Settings")
+        act_reload = self.act_reload = file_menu.addAction("Reload Settings")
         act_reload.triggered.connect(self.reload_settings)
         file_menu.addSeparator()
         act_quit = file_menu.addAction("Quit")
@@ -1160,18 +1163,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_res_prune.setEnabled(not running)
         self.btn_res_stats.setEnabled(not running)
         self.btn_res_export.setEnabled(not running)
+        # Reloading swaps self.jobs out from under a running queue / pending
+        # capture callback, which hold references to the old Job objects.
+        self.act_reload.setEnabled(not running)
 
     def load_settings(self):
         path = settings.config_file_path()
         if not path.exists():
             return
         try:
-            raw = path.read_text()
-        except OSError as e:
+            raw = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
             QtWidgets.QMessageBox.warning(self, "Settings load error", str(e))
             return
         try:
             data = settings.parse_settings_text(raw)
+            jobs = settings.jobs_from_data(data)
         except ValueError as e:
             # Preserve the broken file before auto-save / save-on-close
             # rewrites settings.json and destroys whatever is recoverable.
@@ -1189,7 +1196,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # _select_job() doesn't collect the stale on-screen form into the
         # freshly loaded job at the old index.
         self.current_job_index = -1
-        self.jobs = settings.jobs_from_data(data)
+        self.jobs = jobs
         self._refresh_jobs_list()
         geometry = settings.window_geometry_from_data(data)
         if geometry:
@@ -1245,7 +1252,27 @@ class MainWindow(QtWidgets.QMainWindow):
             super().closeEvent(e)
 
 
+def _install_excepthook():
+    """PyQt5 >= 5.5 calls qFatal() (abort) on an exception escaping a slot, so
+    one unexpected error in a signal handler would kill the app mid-backup and
+    lose unsaved state. Report it instead and keep running."""
+    import traceback
+
+    def hook(exc_type, exc, tb):
+        text = "".join(traceback.format_exception(exc_type, exc, tb))
+        sys.stderr.write(text)
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            QtWidgets.QMessageBox.critical(
+                app.activeWindow(), "Unexpected error",
+                f"An unexpected error occurred:\n\n{exc_type.__name__}: {exc}\n\n"
+                "Details were written to stderr.")
+
+    sys.excepthook = hook
+
+
 def main():
+    _install_excepthook()
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("Qrabackup")
     app.setOrganizationName("qrabackup")

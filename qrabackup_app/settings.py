@@ -17,9 +17,16 @@ SETTINGS_VERSION = 2
 
 
 def config_file_path() -> Path:
-    """Path to settings.json honoring XDG_CONFIG_HOME (creates the dir)."""
+    """Path to settings.json (creates the dir). Honors ``$XDG_CONFIG_HOME``;
+    otherwise ``~/.config`` on POSIX and ``%APPDATA%`` on Windows."""
     xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".config"
+    appdata = os.environ.get("APPDATA") if os.name == "nt" else None
+    if xdg:
+        base = Path(xdg)
+    elif appdata:
+        base = Path(appdata)
+    else:
+        base = Path.home() / ".config"
     cfg_dir = base / "qrabackup"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     return cfg_dir / "settings.json"
@@ -40,20 +47,33 @@ def parse_settings_text(raw: str) -> Dict[str, Any]:
 
 
 def jobs_from_data(data: Dict[str, Any]) -> List[Job]:
-    return [Job.from_dict(j) for j in data.get("jobs", [])]
+    """Profiles from parsed settings. Raises ValueError when ``jobs`` is not a
+    list (a structurally broken file is handled like an unparseable one);
+    individual non-object entries are skipped."""
+    jobs = data.get("jobs", [])
+    if jobs is None:
+        return []
+    if not isinstance(jobs, list):
+        raise ValueError("settings 'jobs' is not a list")
+    return [Job.from_dict(j) for j in jobs if isinstance(j, dict)]
+
+
+def _window(data: Dict[str, Any]) -> Dict[str, Any]:
+    w = data.get("window")
+    return w if isinstance(w, dict) else {}
 
 
 def window_geometry_from_data(data: Dict[str, Any]) -> Optional[str]:
     """The base64-encoded Qt geometry blob (position/size/maximized state), or
     None. Produced/consumed by the UI via QWidget.saveGeometry/restoreGeometry;
     stored here as an opaque string so this module stays Qt-free."""
-    g = data.get("window", {}).get("geometry")
+    g = _window(data).get("geometry")
     return g if isinstance(g, str) and g else None
 
 
 def window_size_from_data(data: Dict[str, Any]) -> Optional[Tuple[int, int]]:
     """Legacy width/height, read only as a fallback for pre-geometry configs."""
-    size = data.get("window", {}).get("size")
+    size = _window(data).get("size")
     if isinstance(size, (list, tuple)) and len(size) == 2:
         try:
             return int(size[0]), int(size[1])
@@ -83,9 +103,9 @@ def write_settings(path: Path, data: Dict[str, Any]) -> None:
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.fchmod(fd, 0o600)  # normalize a pre-existing/umask-restricted tmp
-    except OSError:
+    except (OSError, AttributeError):  # os.fchmod is missing on older Windows Pythons
         pass
-    with os.fdopen(fd, "w") as f:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(json.dumps(data, indent=2))
     tmp.replace(path)
     try:
@@ -100,8 +120,11 @@ def _write_backup_once(path: Path, raw: str, suffix: str) -> Optional[Path]:
     if bak.exists():
         return None
     try:
-        bak.write_text(raw)
-        os.chmod(bak, 0o600)  # backups carry the same secrets
+        # Backups carry the same secrets: create 0600 from the start rather
+        # than write with umask perms (often 0644) and chmod afterwards.
+        fd = os.open(str(bak), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(raw)
         return bak
     except OSError:
         return None

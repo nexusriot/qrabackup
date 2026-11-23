@@ -1,0 +1,12 @@
+# Build-time Python deps for the Windows (Wine) Docker harness, all pinned.
+# Installed with --no-deps, so every transitive dependency is listed.
+PyQt5==5.15.11
+PyQt5-Qt5==5.15.2
+PyQt5-sip==12.15.0
+pyinstaller==6.11.1
+pyinstaller-hooks-contrib==2026.10
+altgraph==0.17.5
+packaging==26.3
+pefile==2023.2.7
+pywin32-ctypes==0.2.3
+setuptools==75.6.0

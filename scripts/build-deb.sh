@@ -25,12 +25,15 @@ case "$VERSION" in
 esac
 ARCH="${ARCH:-$(dpkg --print-architecture 2>/dev/null || uname -m)}"
 
-BIN="$ROOT/dist/$APP"
-# Rebuild when the binary is missing *or* stale: packaging a leftover binary
+BIN="${BIN:-$ROOT/dist/$APP}"
+# NO_REBUILD=1 packages $BIN as-is (used by the Docker harness, which has just
+# built it). Otherwise rebuild when the binary is missing *or* stale: packaging a leftover binary
 # from an earlier version produces a .deb whose control file and executable
 # disagree about what they are.
 stale=""
-if [ ! -f "$BIN" ]; then
+if [ "${NO_REBUILD:-}" = "1" ]; then
+    [ -f "$BIN" ] || { echo "error: $BIN not found" >&2; exit 1; }
+elif [ ! -f "$BIN" ]; then
     stale=yes
 elif [ "$ROOT/qrabackup.py" -nt "$BIN" ] || [ "$ROOT/qrabackup.spec" -nt "$BIN" ]; then
     stale=yes
@@ -70,12 +73,18 @@ sed -e "s/@VERSION@/${VERSION}/g" \
     -e "s/@SIZE@/${INSTALLED_SIZE}/g" \
     "$ROOT/scripts/deb/DEBIAN/control.tpl" > "$STAGE/DEBIAN/control"
 
-( cd "$STAGE" && find usr -type f -print0 \
+( cd "$STAGE" && find usr -type f -print0 | sort -z \
     | xargs -0 md5sum > "$STAGE/DEBIAN/md5sums" )
 chmod 0644 "$STAGE/DEBIAN/md5sums"
 
-mkdir -p "$ROOT/dist"
-DEB="$ROOT/dist/${APP}_${VERSION}_${ARCH}.deb"
+# Reproducible mtimes when SOURCE_DATE_EPOCH is set (Docker harness).
+if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
+    find "$STAGE" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
+fi
+
+OUTDIR="${OUTDIR:-$ROOT/dist}"
+mkdir -p "$OUTDIR"
+DEB="$OUTDIR/${APP}_${VERSION}_${ARCH}.deb"
 dpkg-deb --build --root-owner-group "$STAGE" "$DEB"
 
 echo

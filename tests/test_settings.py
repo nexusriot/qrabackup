@@ -10,6 +10,8 @@ from pathlib import Path
 from qrabackup_app import settings
 from qrabackup_app.model import new_job
 
+posix_only = unittest.skipIf(os.name == "nt", "POSIX permission bits")
+
 
 class DataParsingTest(unittest.TestCase):
     def test_is_legacy(self):
@@ -90,11 +92,13 @@ class WriteSettingsTest(unittest.TestCase):
         # no leftover temp file
         self.assertFalse((Path(self.dir) / "settings.tmp").exists())
 
+    @posix_only
     def test_owner_only_perms(self):
         settings.write_settings(self.path, {"version": 2, "jobs": []})
         mode = stat.S_IMODE(os.stat(self.path).st_mode)
         self.assertEqual(mode, 0o600)
 
+    @posix_only
     def test_rewrite_tightens_loose_perms(self):
         self.path.write_text("{}")
         os.chmod(self.path, 0o644)
@@ -108,7 +112,8 @@ class WriteSettingsTest(unittest.TestCase):
         self.assertIsNotNone(bak)
         self.assertEqual(bak.name, "settings.json.corrupt.bak")
         self.assertEqual(bak.read_text(), raw)
-        self.assertEqual(stat.S_IMODE(os.stat(bak).st_mode), 0o600)
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(os.stat(bak).st_mode), 0o600)
         # second call is a no-op (does not overwrite)
         self.assertIsNone(settings.write_corrupt_backup(self.path, "other"))
         self.assertEqual(bak.read_text(), raw)

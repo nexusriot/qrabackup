@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-from .formats import format_restic_status, format_restic_summary
+from .formats import format_restic_status, format_restic_summary, num
 
 
 @dataclass
@@ -110,7 +110,7 @@ class ResticJsonProgressParser:
         mt = msg.get("message_type")
         if mt == "status":
             return Emit(
-                percent=int(round(float(msg.get("percent_done", 0.0)) * 100)),
+                percent=int(round(num(msg.get("percent_done")) * 100)),
                 status=format_restic_status(msg),
             )
         if mt == "summary":

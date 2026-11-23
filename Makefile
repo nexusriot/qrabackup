@@ -8,6 +8,8 @@
 #   make run           # run from source in a local .venv
 #   make test          # run the unit test suite (offscreen)
 #   make clean         # remove build artifacts and .venv
+#   make dist          # hermetic Docker builds: linux amd64+arm64 (bin/deb/rpm) + windows (exe/setup)
+#   make dist-linux-amd64 | dist-linux-arm64 | dist-windows
 #   make VERSION=1.2.3 deb   # override the version string
 #
 # VERSION defaults to `git describe`, falling back to the package's own
@@ -24,7 +26,7 @@ export VERSION
 
 .DEFAULT_GOAL := build
 
-.PHONY: build deb run test clean version help
+.PHONY: build deb run test clean version help dist dist-linux-amd64 dist-linux-arm64 dist-windows
 
 ## build: PyInstaller standalone binary -> dist/qrabackup
 build:
@@ -33,6 +35,22 @@ build:
 ## deb: Debian package for the host architecture
 deb:
 	$(DEB)
+
+## dist: hermetic Docker release builds for every target -> dist/<target>/
+dist:
+	./packaging/build.sh all
+
+## dist-linux-amd64: binary + .deb + .rpm for x86_64 (Docker)
+dist-linux-amd64:
+	./packaging/build.sh linux-amd64
+
+## dist-linux-arm64: binary + .deb + .rpm for aarch64 (Docker, QEMU on x86)
+dist-linux-arm64:
+	./packaging/build.sh linux-arm64
+
+## dist-windows: qrabackup.exe + NSIS installer for Windows x64 (Docker + Wine)
+dist-windows:
+	./packaging/build.sh windows
 
 ## run: run from source (provisions .venv on first use)
 run:
@@ -44,7 +62,8 @@ test:
 
 ## clean: remove build/, dist/, .venv and PyInstaller caches
 clean:
-	rm -rf build $(DIST) .venv __pycache__ *.spec.bak
+	rm -rf build $(DIST) .venv *.spec.bak
+	find . -name __pycache__ -type d -prune -exec rm -rf {} +
 	@echo "cleaned."
 
 ## version: print the resolved version string

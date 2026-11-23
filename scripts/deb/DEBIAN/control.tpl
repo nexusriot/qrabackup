@@ -4,6 +4,11 @@ Section: utils
 Priority: optional
 Architecture: @ARCH@
 Installed-Size: @SIZE@
+Depends: libc6 (>= 2.35), libgl1, libegl1, libfontconfig1, libfreetype6,
+ libdbus-1-3, libx11-xcb1, libxcb1, libxkbcommon0, libxkbcommon-x11-0,
+ libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-randr0,
+ libxcb-render-util0, libxcb-shape0, libxcb-xfixes0, libxcb-xinerama0,
+ libxcb-xkb1
 Recommends: rsync, restic
 Maintainer: Vlad Ananyev <vlananyev@gmail.com>
 Homepage: https://github.com/nexusriot/qrabackup

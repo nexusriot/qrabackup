@@ -1,0 +1,53 @@
+# RPM wrapper around the prebuilt PyInstaller onefile binary.
+Name:           qrabackup
+Version:        @RPM_VERSION@
+Release:        @RPM_RELEASE@
+Summary:        rsync + restic/S3 backup GUI
+License:        Proprietary
+URL:            https://github.com/nexusriot/qrabackup
+BuildArch:      @RPM_ARCH@
+
+# A PyInstaller onefile binary carries its payload appended to the ELF;
+# rpm's strip / debuginfo / build-id post-processing would corrupt it.
+%global debug_package %{nil}
+%global __os_install_post %{nil}
+%global __strip /bin/true
+%global _build_id_links none
+
+# The bundled Qt xcb platform plugin dlopens these system libraries. Soname
+# requirements resolve on Fedora, RHEL/Alma/Rocky and openSUSE alike.
+Requires:       libGL.so.1()(64bit)
+Requires:       libEGL.so.1()(64bit)
+Requires:       libfontconfig.so.1()(64bit)
+Requires:       libfreetype.so.6()(64bit)
+Requires:       libdbus-1.so.3()(64bit)
+Requires:       libX11-xcb.so.1()(64bit)
+Requires:       libxcb.so.1()(64bit)
+Requires:       libxkbcommon.so.0()(64bit)
+Requires:       libxkbcommon-x11.so.0()(64bit)
+Requires:       libxcb-icccm.so.4()(64bit)
+Requires:       libxcb-image.so.0()(64bit)
+Requires:       libxcb-keysyms.so.1()(64bit)
+Requires:       libxcb-randr.so.0()(64bit)
+Requires:       libxcb-render-util.so.0()(64bit)
+Requires:       libxcb-shape.so.0()(64bit)
+Requires:       libxcb-xfixes.so.0()(64bit)
+Requires:       libxcb-xinerama.so.0()(64bit)
+Requires:       libxcb-xkb.so.1()(64bit)
+Recommends:     rsync
+Recommends:     restic
+
+%description
+Qrabackup is a small desktop backup tool with per-profile engines: rsync
+mirrors sources to a local or mounted path, and restic makes encrypted,
+deduplicated backups to S3 and S3-compatible stores.
+
+%install
+install -D -m 0755 %{_sourcedir}/qrabackup %{buildroot}%{_bindir}/qrabackup
+install -D -m 0644 %{_sourcedir}/qrabackup.desktop %{buildroot}%{_datadir}/applications/qrabackup.desktop
+install -D -m 0644 %{_sourcedir}/README.md %{buildroot}%{_docdir}/qrabackup/README.md
+
+%files
+%attr(0755,root,root) %{_bindir}/qrabackup
+%attr(0644,root,root) %{_datadir}/applications/qrabackup.desktop
+%doc %{_docdir}/qrabackup/README.md

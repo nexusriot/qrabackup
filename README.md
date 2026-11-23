@@ -1,15 +1,14 @@
-# Qrabackup – Simple Rsync Backup GUI for Linux
+# Qrabackup – rsync + restic/S3 Backup GUI
 
-Qrabackup is a small, no-nonsense backup helper for Linux built with **PyQt5** and **rsync**.
+Qrabackup is a small, no-nonsense backup helper built with **PyQt5**. Each
+backup *profile* (called a “location”) uses one of two engines:
 
-It lets you define multiple backup *profiles* (called “locations”) with their own:
+- **rsync** — mirror folders to a local or mounted destination
+- **restic** — encrypted, deduplicated snapshots in S3 / S3-compatible storage
 
-- Source folders
-- Destination folder
-- Exclude patterns
-- Per-job rsync options
-
-Profiles are saved under `~/.config/qrabackup/settings.json` (XDG-aware) and are loaded automatically on start.
+Each profile has its own sources, exclude patterns and engine options.
+Profiles are saved in `settings.json` (see [Settings](#settings)) and loaded
+automatically on start.
 
 ---
 
@@ -28,17 +27,18 @@ Profiles are saved under `~/.config/qrabackup/settings.json` (XDG-aware) and are
 -  **Auto-save settings** on any change and on exit  
 -  **Command preview** – shows the exact `rsync` command being executed  
 -  **Live log output** and **progress bar** based on rsync output (`--info=progress2`)  
--  Settings stored in a single JSON file: `~/.config/qrabackup/settings.json`  
--  Honors `$XDG_CONFIG_HOME` if set  
+-  Settings stored in a single JSON file (see [Settings](#settings))  
 
 ---
 
 ## Requirements
 
-- **Linux** (tested/targeted)
-- **Python** 3.8+
-- **PyQt5**
-- **rsync** available in `PATH`
+- **Linux** (primary target). Windows x64 builds are produced too; restic
+  works there, rsync needs a Windows port (e.g. cwRsync) in `PATH`.
+- **Python** 3.8+ and **PyQt5** (only when running from source — the packaged
+  builds bundle both)
+- **rsync** in `PATH` for rsync profiles
+- **restic** in `PATH` for restic profiles
 
 Install PyQt5 (for example):
 
@@ -108,9 +108,17 @@ See [`docs/DESIGN-restic-s3.md`](docs/DESIGN-restic-s3.md) for the full design.
 
 ## Settings
 
-Settings are stored in `~/.config/qrabackup/settings.json` (honors
-`$XDG_CONFIG_HOME`). On first run with an older config, it is migrated to the
-new format and the original is preserved as `settings.json.v1.bak`.
+Settings are stored in `settings.json` under:
+
+- Linux: `$XDG_CONFIG_HOME/qrabackup/` (default `~/.config/qrabackup/`)
+- Windows: `%APPDATA%\qrabackup\` (`$XDG_CONFIG_HOME` still wins if set)
+
+On first run with an older config, it is migrated to the new format and the
+original is preserved as `settings.json.v1.bak`. A file that cannot be parsed —
+invalid JSON or a broken structure such as `"jobs"` not being a list — is
+preserved as `settings.json.corrupt.bak` (mode `0600`) before the app starts
+with a default profile. Fields with the wrong type (for example `null` where an
+object is expected) are replaced by defaults.
 
 The window geometry (position, size, and maximized state) is remembered under
 `window.geometry` and restored on the next launch. Older configs that only
@@ -130,7 +138,7 @@ package, which keeps the **pure, testable logic separate from the Qt UI**:
 | `qrabackup_app/settings.py` | no  | load / serialize / atomically write `settings.json` |
 | `qrabackup_app/parsers.py`  | no  | map subprocess output → progress / log / error emissions |
 | `qrabackup_app/commands.py` | no  | build rsync/restic argv, run-step plans, command preview |
-| `qrabackup_app/runner.py`   | yes | `CommandRunner` — `QProcess` wrapper |
+| `qrabackup_app/runner.py`   | yes | `CommandRunner` (streams output) and `CaptureRunner` (captures output without blocking) — `QProcess` wrappers |
 | `qrabackup_app/ui.py`       | yes | `SnapshotsDialog`, `MainWindow`, `main()` |
 
 Importing the no-Qt modules does **not** import PyQt5, so the logic is unit-
@@ -160,6 +168,26 @@ pytest
 ```
 
 ## Building
+
+### Release builds (hermetic, Docker)
+
+`packaging/build.sh` builds every release artifact in pinned Docker containers.
+The base images are pinned by digest, apt installs from a fixed snapshot date,
+Python build dependencies are pinned, and the build itself runs with
+`--network none` against a read-only checkout:
+
+```bash
+make dist                # all targets below
+make dist-linux-amd64    # dist/linux-amd64/: binary, .deb, .rpm
+make dist-linux-arm64    # dist/linux-arm64/: binary, .deb, .rpm (aarch64)
+make dist-windows        # dist/windows-x64/: qrabackup.exe + NSIS setup.exe
+```
+
+Checksums of all artifacts are written to `dist/SHA256SUMS`. See
+[`docs/PACKAGING.md`](docs/PACKAGING.md) for details, supported distributions,
+and cross-building arm64 on an x86 host (QEMU).
+
+### Local builds
 
 The Makefile wraps `scripts/build.sh` / `scripts/build-deb.sh` (a project-local
 `.venv` is provisioned automatically; PyInstaller builds for the host arch):
